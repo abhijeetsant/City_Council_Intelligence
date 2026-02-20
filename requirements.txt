@@ -1,0 +1,12 @@
+streamlit
+requests
+youtube-transcript-api
+groq
+openai
+google-genai
+python-dotenv
+beautifulsoup4
+rouge-score
+st-supabase-connection
+supabase
+pandas
