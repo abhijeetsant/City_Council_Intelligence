@@ -2,92 +2,135 @@
 youtube_logic.py — YouTube Transcript Fetcher
 San Ramon Council Intelligence Platform
 
-Searches YouTube for a City Council meeting by date and fetches
-the auto-generated transcript via the YouTube Transcript API.
-
-Limitation: YouTube search results are not guaranteed to match the
-exact meeting date. Results are ordered by relevance, and the first
-result is used. This works well for San Ramon because the city's
-YouTube channel consistently uploads meetings within 24-48 hours.
-
-Author: San Ramon Council Intelligence
+Strategy: search YouTube for the meeting by natural-language date,
+try up to MAX_CANDIDATES video IDs, return first valid transcript.
 """
 
 import re
 import logging
+from datetime import datetime
 
 import requests
-from youtube_transcript_api import YouTubeTranscriptApi
 
 logger = logging.getLogger(__name__)
 
 YOUTUBE_SEARCH = "https://www.youtube.com/results?search_query="
-HEADERS        = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+HEADERS = {
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+MAX_CANDIDATES = 8
+MIN_SEGMENTS   = 20   # fewer than this → likely wrong video
 
 
-def _search_youtube(meeting_date: str) -> str | None:
+def _format_date_for_search(meeting_date: str) -> str:
     """
-    Searches YouTube for a San Ramon City Council meeting by date.
-    Returns the first matching video ID, or None.
+    Converts any date format to natural language for YouTube search.
+    "02/10/2026" → "February 10 2026"
+    "2026-02-10" → "February 10 2026"
     """
-    query      = f"San Ramon City Council Meeting {meeting_date}"
-    search_url = YOUTUBE_SEARCH + query.replace(" ", "+")
-    logger.info(f"YouTube: Searching — {search_url}")
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(meeting_date.strip(), fmt).strftime("%B %d %Y")
+        except ValueError:
+            continue
+    logger.warning(f"YouTube: Could not reformat date '{meeting_date}' — using as-is")
+    return meeting_date
 
-    try:
-        resp     = requests.get(search_url, headers=HEADERS, timeout=10)
-        video_ids = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", resp.text)
 
-        seen, unique = set(), []
-        for vid in video_ids:
-            if vid not in seen:
-                seen.add(vid)
-                unique.append(vid)
+def _search_youtube(date_str: str) -> list[str]:
+    """
+    Searches YouTube and returns up to MAX_CANDIDATES deduplicated video IDs.
+    Tries two query variants for maximum recall.
+    """
+    natural = _format_date_for_search(date_str)
+    safe    = natural.replace(" ", "+")
 
-        if unique:
-            logger.info(f"YouTube: {len(unique)} candidates → using {unique[0]}")
-            return unique[0]
+    queries = [
+        f"San+Ramon+City+Council+Meeting+{safe}",
+        f"\"San+Ramon\"+Council+Meeting+{safe}",
+        f"City+of+San+Ramon+Council+{safe}",
+    ]
 
-        logger.warning("YouTube: No video IDs found in search results")
-        return None
+    seen, results = set(), []
 
-    except Exception as e:
-        logger.error(f"YouTube: Search failed — {e}", exc_info=True)
-        return None
+    for query in queries:
+        url = YOUTUBE_SEARCH + query
+        logger.info(f"YouTube: Searching → {url}")
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=12)
+            resp.raise_for_status()
+            for vid in re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", resp.text):
+                if vid not in seen:
+                    seen.add(vid)
+                    results.append(vid)
+                    if len(results) >= MAX_CANDIDATES:
+                        logger.info(f"YouTube: Hit MAX_CANDIDATES={MAX_CANDIDATES}, stopping")
+                        return results
+        except Exception as e:
+            logger.warning(f"YouTube: Search query failed — {e}")
+            continue
+
+    logger.info(f"YouTube: Found {len(results)} candidate(s): {results}")
+    return results
 
 
 def get_transcript(meeting_date: str) -> list[dict] | None:
     """
     Fetches the YouTube transcript for a given meeting date.
 
-    Strategy:
-      1. Search YouTube for the meeting by date string
-      2. Take the top result video ID
-      3. Fetch transcript via YouTubeTranscriptApi
+    1. Reformats date to natural language
+    2. Searches YouTube with 3 query variants
+    3. Tries each video ID until a valid transcript is found
+    4. Returns list of {text, start, duration} or None
 
-    Args:
-        meeting_date: Date string in any format (e.g. "02/10/2026")
-
-    Returns:
-        List of segment dicts [{text, start, duration}], or None on failure.
+    BUG-07 FIX: catches public exception classes, not internal _errors module.
     """
-    logger.info(f"YouTube: Fetching transcript for {meeting_date}")
+    logger.info(f"YouTube: Transcript fetch requested for '{meeting_date}'")
 
-    video_id = _search_youtube(meeting_date)
-    if not video_id:
-        logger.error("YouTube: No video ID found — transcript fetch aborted")
+    candidates = _search_youtube(meeting_date)
+    if not candidates:
+        logger.error("YouTube: No video candidates found in search")
         return None
 
+    # Lazy import so app doesn't crash if package not installed
     try:
-        api      = YouTubeTranscriptApi()
-        fetched  = api.fetch(video_id)
-        segments = [
-            {"text": e.text, "start": e.start, "duration": e.duration}
-            for e in fetched
-        ]
-        logger.info(f"YouTube: Fetched {len(segments):,} segments for {video_id}")
-        return segments
-
-    except Exception as e:
-        logger.error(f"YouTube: Transcript fetch failed ({video_id}) — {e}", exc_info=True)
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        logger.error("YouTube: youtube-transcript-api not installed")
         return None
+
+    api = YouTubeTranscriptApi()
+
+    for video_id in candidates:
+        logger.info(f"YouTube: Attempting transcript for {video_id}")
+        try:
+            fetched  = api.fetch(video_id)
+            segments = [
+                {"text": e.text, "start": e.start, "duration": e.duration}
+                for e in fetched
+                if e.text and e.text.strip()
+            ]
+
+            if len(segments) < MIN_SEGMENTS:
+                logger.warning(
+                    f"YouTube: {video_id} only has {len(segments)} segments "
+                    f"(min={MIN_SEGMENTS}) — likely wrong video, skipping"
+                )
+                continue
+
+            logger.info(f"YouTube: ✓ {len(segments):,} segments from {video_id}")
+            return segments
+
+        except Exception as e:
+            # BUG-07 FIX: catch all exceptions, log exact type for debugging
+            exc_type = type(e).__name__
+            logger.warning(f"YouTube: {video_id} failed ({exc_type}) — {e}")
+            continue
+
+    logger.error(
+        f"YouTube: All {len(candidates)} candidate(s) exhausted. "
+        f"Transcript not available for '{meeting_date}'."
+    )
+    return None

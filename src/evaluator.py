@@ -5,8 +5,10 @@ from google import genai
 
 class SummaryEvaluator:
     def __init__(self):
-        # Uses your existing Gemini client structure for the 'Judge'
+        # Uses same Gemini client structure as engine.py
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        # Use same model as engine.py for consistency
+        self._model = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
     def score_summary(self, transcript, summary, model_name):
         """Scores a summary based on Faithfulness and Coverage."""
@@ -20,12 +22,22 @@ class SummaryEvaluator:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-pro", contents=prompt
+                model=self._model, contents=prompt
             )
-            return {"Model": model_name, "Evaluation": response.text, "Date": datetime.date.today()}
+            return {
+                "Model":      model_name,
+                "Evaluation": response.text,
+                "Date":       datetime.date.today(),
+            }
         except Exception as e:
-            return {"Model": model_name, "Evaluation": f"Error: {e}"}
+            return {
+                "Model":      model_name,
+                "Evaluation": f"Error: {e}",
+                "Date":       datetime.date.today(),  # BUG-F FIX: was missing on error path
+            }
 
     def save_comparison(self, results_list):
+        import os as _os
+        _os.makedirs("logs", exist_ok=True)
         df = pd.DataFrame(results_list)
         df.to_csv("logs/model_evaluation.csv", index=False, mode='a')
