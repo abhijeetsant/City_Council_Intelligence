@@ -2,60 +2,65 @@
 engine.py — LLM Summarization Engine
 San Ramon Council Intelligence Platform
 
-Rate-limit hedging: each backend has a prioritised model cascade.
-When the primary model hits a rate/quota/404 error, the engine
-silently retries with the next model in that backend's list.
-The user's backend selection (Gemini, Groq, etc.) never changes.
+Model cascade strategy:
+  - Every backend tries a priority-ordered list of models
+  - On 404 / model-not-found / rate-limit → automatically tries next model
+  - Final fallback returns a clear user-facing error (never a silent blank)
 
-Model cascades:
-  gemini     → gemini-3-flash-preview → gemini-2.5-flash → gemini-2.0-flash
-  groq_llama → llama-3.3-70b-versatile → llama-3.1-70b-versatile → llama-3.1-8b-instant
-  trinity    → arcee-ai/trinity-large-preview:free → mistralai/mistral-7b-instruct:free
-  deepseek_r1→ deepseek/deepseek-r1-0528:free → deepseek/deepseek-chat:free
+OpenRouter free models are volatile by design — cascades are mandatory.
 """
 
 import os
 import logging
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
-from st_supabase_connection import SupabaseConnection
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 SUPPORTED_BACKENDS = ("groq_llama", "gemini", "trinity", "deepseek_r1")
 
-# Per-backend model cascades — primary first, fallbacks in order.
-# Only models within the same provider/key are listed so no new secrets
-# are required. Override the primary via env vars as before.
-MODEL_CASCADES = {
-    "gemini": [
-        "gemini-3-flash-preview",    # primary — highest RPD on free tier
-        "gemini-2.5-flash",          # fallback 1
-        "gemini-2.0-flash",          # fallback 2
-    ],
-    "groq_llama": [
-        "llama-3.3-70b-versatile",   # primary
-        "llama-3.1-70b-versatile",   # fallback 1
-        "llama-3.1-8b-instant",      # fallback 2 — smallest, highest rate limit
-    ],
-    "trinity": [
-        "arcee-ai/trinity-large-preview:free",   # primary
-        "mistralai/mistral-7b-instruct:free",    # fallback
-    ],
-    "deepseek_r1": [
-        "deepseek/deepseek-r1-0528:free",        # primary
-        "deepseek/deepseek-chat:free",           # fallback
-    ],
-}
+# ── Model cascade lists (tried in order, first success wins) ──────────────────
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+]
 
-# Errors that should trigger a model-level fallback
-_FALLBACK_TRIGGERS = (
-    "rate_limit", "429", "quota", "insufficient_quota", "billing",
-    "decommissioned", "model_decommissioned", "not_found", "404",
-    "overloaded", "503", "502",
+GEMINI_MODELS = [
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash-preview-04-17",
+    "gemini-2.0-flash",
+]
+
+# DeepSeek: R1 reasoning variants first, fall back to V3 chat (stable workhorse)
+DEEPSEEK_MODELS = [
+    "deepseek/deepseek-r1:free",
+    "deepseek/deepseek-r1-0528:free",
+    "deepseek/deepseek-chat:free",
+    "deepseek/deepseek-v3-base:free",
+]
+
+# Trinity: Arcee first, then strong free OpenRouter alternatives
+TRINITY_MODELS = [
+    "arcee-ai/trinity-large-preview:free",
+    "mistralai/mistral-small-3.2-24b-instruct:free",
+    "meta-llama/llama-4-scout:free",
+    "google/gemma-3-27b-it:free",
+]
+
+_MODEL_GONE_SIGNALS = (
+    "no endpoints found",
+    "404",
+    "model not found",
+    "decommissioned",
+    "model_decommissioned",
+    "not available",
+    "no provider",
 )
+_RATE_LIMIT_SIGNALS = ("rate_limit", "429", "too many requests")
 
 
 def _get_secret(key: str) -> str | None:
@@ -68,26 +73,12 @@ def _get_secret(key: str) -> str | None:
     return value
 
 
-def _is_fallback_error(msg: str) -> bool:
-    msg = msg.lower()
-    return any(trigger in msg for trigger in _FALLBACK_TRIGGERS)
+def _is_model_gone(msg: str) -> bool:
+    return any(s in msg for s in _MODEL_GONE_SIGNALS)
 
 
-def _call_llm(client_fn, label: str) -> tuple[str | None, bool]:
-    """
-    Returns (result, should_fallback).
-    should_fallback=True → rate/quota/model error, try next model in cascade.
-    should_fallback=False + result=None → hard error, stop.
-    """
-    try:
-        return client_fn(), False
-    except Exception as e:
-        msg = str(e)
-        if _is_fallback_error(msg):
-            logger.warning(f"{label}: cascade trigger — {msg[:120]}")
-            return None, True
-        logger.error(f"{label} error: {e}", exc_info=True)
-        return f"**{label} Error:** {e}", False
+def _is_rate_limit(msg: str) -> bool:
+    return any(s in msg for s in _RATE_LIMIT_SIGNALS)
 
 
 def build_prompt(meeting: dict, text_snippet: str) -> str:
@@ -128,27 +119,7 @@ class CouncilEngine:
         self.backend = (backend or os.getenv("SUMMARIZER_BACKEND", "gemini")).lower()
         if self.backend not in SUPPORTED_BACKENDS:
             raise ValueError(f"Invalid backend '{self.backend}'. Choose from: {SUPPORTED_BACKENDS}")
-
-        # Allow env override of the primary model (preserves existing behaviour)
-        _env_overrides = {
-            "gemini":      os.getenv("GEMINI_MODEL"),
-            "groq_llama":  os.getenv("GROQ_MODEL"),
-        }
-        if _env_overrides.get(self.backend):
-            override = _env_overrides[self.backend]
-            cascade  = MODEL_CASCADES[self.backend]
-            # Put the override first; keep the rest as fallbacks
-            self._cascade = [override] + [m for m in cascade if m != override]
-            logger.info(f"Engine: Env override '{override}' placed at head of cascade")
-        else:
-            self._cascade = list(MODEL_CASCADES[self.backend])
-
-        logger.info(f"Engine: Init backend='{self.backend}' cascade={self._cascade}")
-        self._init_backend()
-
-    # ── Backend initialisation ────────────────────────────────────────────────
-
-    def _init_backend(self):
+        logger.info(f"Engine: Init '{self.backend}'")
         {
             "groq_llama":  self._init_groq,
             "gemini":      self._init_gemini,
@@ -156,14 +127,44 @@ class CouncilEngine:
             "deepseek_r1": self._init_openrouter,
         }[self.backend]()
 
+    # ── Groq ──────────────────────────────────────────────────────────────────
     def _init_groq(self):
         from groq import Groq
         key = _get_secret("GROQ_API_KEY")
         if not key:
             raise ValueError("GROQ_API_KEY not found")
         self._groq = Groq(api_key=key)
-        logger.info("Engine: Groq ready")
+        logger.info(f"Engine: Groq ready (cascade: {GROQ_MODELS})")
 
+    def _summarize_groq(self, prompt: str) -> str:
+        system = "You are a senior political analyst. Report facts only. Use clean Markdown with ## headers and bullet points."
+        for model in GROQ_MODELS:
+            logger.info(f"Engine: Trying Groq model '{model}'")
+            try:
+                result = self._groq.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=2000,
+                ).choices[0].message.content
+                logger.info(f"Engine: Groq '{model}' succeeded")
+                return result
+            except Exception as e:
+                msg = str(e).lower()
+                if _is_rate_limit(msg):
+                    logger.warning(f"Engine: Groq '{model}' rate limited — waiting 5s")
+                    time.sleep(5)
+                elif _is_model_gone(msg):
+                    logger.warning(f"Engine: Groq '{model}' unavailable — trying next")
+                else:
+                    logger.error(f"Engine: Groq '{model}' error: {e}")
+                continue
+        return "**Groq Error:** All Groq models currently unavailable. Please switch to Gemini."
+
+    # ── Gemini ─────────────────────────────────────────────────────────────────
     def _init_gemini(self):
         from google import genai
         key = _get_secret("GEMINI_API_KEY")
@@ -171,10 +172,38 @@ class CouncilEngine:
             raise ValueError("GEMINI_API_KEY not found")
         self._gemini_client = genai.Client(
             api_key=key,
-            http_options={"api_version": "v1beta"}
+            http_options={"api_version": "v1beta"},
         )
-        logger.info("Engine: Gemini ready")
+        logger.info(f"Engine: Gemini ready (cascade: {GEMINI_MODELS})")
 
+    def _summarize_gemini(self, prompt: str) -> str:
+        system = (
+            "You are a concise civic reporter. Start immediately with ## Executive Summary. "
+            "Use clean Markdown with ## section headers and bullet points. No preamble."
+        )
+        full_prompt = f"{system}\n\n{prompt}"
+        for model in GEMINI_MODELS:
+            logger.info(f"Engine: Trying Gemini model '{model}'")
+            try:
+                result = self._gemini_client.models.generate_content(
+                    model=model,
+                    contents=full_prompt,
+                ).text
+                logger.info(f"Engine: Gemini '{model}' succeeded")
+                return result
+            except Exception as e:
+                msg = str(e).lower()
+                if _is_rate_limit(msg):
+                    logger.warning(f"Engine: Gemini '{model}' rate limited — waiting 5s")
+                    time.sleep(5)
+                elif "503" in msg or "unavailable" in msg or _is_model_gone(msg):
+                    logger.warning(f"Engine: Gemini '{model}' unavailable — trying next")
+                else:
+                    logger.error(f"Engine: Gemini '{model}' error: {e}")
+                continue
+        return "**Gemini Error:** All Gemini models currently unavailable. Please switch to Llama."
+
+    # ── OpenRouter (Trinity + DeepSeek) ────────────────────────────────────────
     def _init_openrouter(self):
         from openai import OpenAI
         key = _get_secret("OPENROUTER_API_KEY")
@@ -183,110 +212,81 @@ class CouncilEngine:
         self._or_client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=key,
-            default_headers={"HTTP-Referer": "http://localhost:8501"},
+            default_headers={
+                "HTTP-Referer": "https://abhijeetsant-city-council-intelligence.streamlit.app",
+                "X-Title":      "San Ramon Council Intelligence",
+            },
         )
-        logger.info("Engine: OpenRouter ready")
+        self._or_cascade = {
+            "trinity":     TRINITY_MODELS,
+            "deepseek_r1": DEEPSEEK_MODELS,
+        }[self.backend]
+        logger.info(f"Engine: OpenRouter ready | backend={self.backend} | cascade={self._or_cascade}")
 
-    # ── Per-model call helpers ────────────────────────────────────────────────
-
-    def _call_groq(self, model: str, prompt: str) -> tuple[str | None, bool]:
-        logger.info(f"Engine: Groq → {model}")
-        return _call_llm(
-            lambda: self._groq.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a senior political analyst. Report facts only. Use clean Markdown with ## headers and bullet points."},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.1,
-                max_tokens=2000,
-            ).choices[0].message.content,
-            f"Groq/{model}"
-        )
-
-    def _call_gemini(self, model: str, prompt: str) -> tuple[str | None, bool]:
-        logger.info(f"Engine: Gemini → {model}")
+    def _summarize_openrouter(self, prompt: str) -> str:
         system = (
-            "You are a concise civic reporter. Start immediately with ## Executive Summary. "
-            "Use clean Markdown with ## section headers and bullet points. No preamble."
+            "You are an expert City Clerk. Produce executive-level civic reports in clean Markdown. "
+            "Start with ## Executive Summary. No preamble."
         )
-        return _call_llm(
-            lambda: self._gemini_client.models.generate_content(
-                model=model,
-                contents=f"{system}\n\n{prompt}",
-            ).text,
-            f"Gemini/{model}"
+        for model in self._or_cascade:
+            logger.info(f"Engine: Trying OpenRouter model '{model}'")
+            try:
+                result = self._or_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=0.1,
+                ).choices[0].message.content
+
+                if not result or not result.strip():
+                    logger.warning(f"Engine: OpenRouter '{model}' returned empty content — trying next")
+                    continue
+
+                logger.info(f"Engine: OpenRouter '{model}' succeeded ({len(result):,} chars)")
+                return result
+
+            except Exception as e:
+                msg = str(e).lower()
+                if _is_model_gone(msg):
+                    logger.warning(f"Engine: OpenRouter '{model}' gone (404) — trying next in cascade")
+                elif _is_rate_limit(msg):
+                    logger.warning(f"Engine: OpenRouter '{model}' rate limited — waiting 5s")
+                    time.sleep(5)
+                elif "insufficient_quota" in msg or "billing" in msg:
+                    return "**Quota Error:** OpenRouter account has insufficient credits. Add credits at openrouter.ai."
+                elif "invalid_api_key" in msg or "authentication" in msg:
+                    return "**Auth Error:** Invalid OPENROUTER_API_KEY. Check your Streamlit secrets."
+                else:
+                    logger.error(f"Engine: OpenRouter '{model}' unexpected error: {e}")
+                continue
+
+        backend_label = "DeepSeek R1" if self.backend == "deepseek_r1" else "Trinity"
+        tried = " → ".join(self._or_cascade)
+        return (
+            f"**{backend_label} — All models unavailable.**\n\n"
+            f"Cascade tried: {tried}\n\n"
+            f"OpenRouter free endpoints are volatile. Please switch to **Gemini** or **Llama** instead."
         )
 
-    def _call_openrouter(self, model: str, prompt: str) -> tuple[str | None, bool]:
-        logger.info(f"Engine: OpenRouter → {model}")
-        return _call_llm(
-            lambda: self._or_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an expert City Clerk. Produce executive-level civic reports in clean Markdown. Start with ## Executive Summary. No preamble."},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.1,
-            ).choices[0].message.content,
-            f"OpenRouter/{model}"
-        )
-
-    def _call_model(self, model: str, prompt: str) -> tuple[str | None, bool]:
-        """Dispatch to the right API for a given model string."""
-        if self.backend == "groq_llama":
-            return self._call_groq(model, prompt)
-        elif self.backend == "gemini":
-            return self._call_gemini(model, prompt)
-        else:
-            return self._call_openrouter(model, prompt)
-
-    # ── Main dispatcher with model cascade ───────────────────────────────────
-
+    # ── Dispatcher ─────────────────────────────────────────────────────────────
     def generate_summary(self, meeting: dict, transcript: list[dict]) -> str:
-        """
-        Runs the model cascade for the user's selected backend.
-        On a rate-limit / quota / 404 error, silently steps down to the
-        next model in the cascade. The backend (provider) never changes.
-        """
         limit   = self.CONTEXT_LIMITS[self.backend]
         snippet = prepare_transcript(transcript, limit)
         prompt  = build_prompt(meeting, snippet)
-
-        logger.info(f"Engine: Starting cascade for backend='{self.backend}' | {len(self._cascade)} model(s)")
-
-        for i, model in enumerate(self._cascade):
-            is_primary = (i == 0)
-            result, should_fallback = self._call_model(model, prompt)
-
-            if not should_fallback:
-                # Success or hard error — either way, return
-                if result and not is_primary:
-                    logger.info(f"Engine: Cascade succeeded on model '{model}' (step {i+1})")
-                    result = f"> *Generated with **{model}** (rate-limit fallback from primary)*\n\n{result}"
-                return result
-
-            # Fallback triggered
-            if i + 1 < len(self._cascade):
-                logger.warning(
-                    f"Engine: '{model}' rate/quota limited → "
-                    f"trying '{self._cascade[i+1]}'"
-                )
-            else:
-                logger.error(f"Engine: All models in cascade exhausted for backend='{self.backend}'")
-
-        return (
-            f"**{self.backend.title()} Temporarily Unavailable**\n\n"
-            f"All models in the {self.backend} cascade are currently rate-limited:\n"
-            + "\n".join(f"- `{m}`" for m in self._cascade) +
-            "\n\n**What to do:**\n"
-            "- Groq resets hourly · Gemini resets daily at midnight PT\n"
-            "- Switch to a different backend in the sidebar while waiting"
-        )
+        logger.info(f"Engine: Prompt={len(prompt):,} chars | backend={self.backend}")
+        return {
+            "groq_llama":  self._summarize_groq,
+            "gemini":      self._summarize_gemini,
+            "trinity":     self._summarize_openrouter,
+            "deepseek_r1": self._summarize_openrouter,
+        }[self.backend](prompt)
 
     @staticmethod
     def save_to_supabase(meeting: dict, summary: str, backend: str) -> bool:
         try:
+            from st_supabase_connection import SupabaseConnection
             conn = st.connection("supabase", type=SupabaseConnection)
             conn.table("council_reports").insert({
                 "meeting_date": meeting["date"],
@@ -299,6 +299,13 @@ class CouncilEngine:
             }).execute()
             logger.info(f"Engine: Saved {meeting['date']} to Supabase")
             return True
+        except ImportError:
+            logger.debug("Engine: st-supabase-connection not installed — skipping save")
+            return False
         except Exception as e:
-            logger.error(f"Engine: Supabase save failed — {e}", exc_info=True)
+            err = str(e).lower()
+            if any(x in err for x in ("nodename", "servname", "connect", "network", "dns", "timeout")):
+                logger.debug("Engine: Supabase unreachable (no VPN?) — in-memory only")
+            else:
+                logger.error(f"Engine: Supabase save failed — {e}", exc_info=True)
             return False

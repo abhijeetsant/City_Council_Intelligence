@@ -25,7 +25,6 @@ All 18 bugs from engineering audit addressed:
 import html
 import logging
 import os
-import re
 from datetime import datetime as _dt
 
 import streamlit as st
@@ -74,7 +73,7 @@ BACKENDS = {
         "env_key": "OPENROUTER_API_KEY", "icon": "◈", "ctx": "40k", "speed": "Moderate",
     },
     "deepseek_r1": {
-        "label": "DeepSeek R1",      "model": "deepseek/deepseek-r1-0528:free",
+        "label": "DeepSeek R1",      "model": "deepseek/deepseek-r1:free",
         "env_key": "OPENROUTER_API_KEY", "icon": "◎", "ctx": "64k", "speed": "Thorough",
     },
 }
@@ -87,6 +86,9 @@ def _safe_key(raw: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", str(raw))
 
 
+import re  # noqa: E402 (needed for _safe_key above)
+
+
 # ══════════════════════════════════════════════════════════════════
 # CSS
 # ══════════════════════════════════════════════════════════════════
@@ -95,26 +97,31 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Source+Serif+4:wght@300;400;600&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
 
 :root {
-    --ink:       #1a1f2e;
-    --ink-mid:   #4a5568;
-    --ink-light: #718096;
-    --ink-faint: #a0aec0;
-    --paper:     #faf9f6;
-    --paper-1:   #f5f2ec;
-    --paper-2:   #eeeadf;
-    --white:     #ffffff;
-    --gold:      #b07d10;
-    --gold-dk:   #92610a;
-    --gold-lt:   #f5ecd4;
-    --gold-pale: #fdf8ed;
-    --teal:      #0f6b6b;
-    --teal-lt:   #e8f5f5;
-    --green:     #1a5c2e;
-    --green-lt:  #e8f5ec;
-    --rad:       7px;
-    --font-d:    'Cormorant Garamond', Georgia, serif;
-    --font-b:    'Source Serif 4', Georgia, serif;
-    --font-m:    'IBM Plex Mono', monospace;
+    --ink:        #1a1f2e;
+    --ink-mid:    #2d3748;
+    --ink-light:  #4a5568;
+    --ink-muted:  #5a6a7a;
+    --paper:      #faf9f6;
+    --paper-1:    #f5f2ec;
+    --paper-2:    #eeeadf;
+    --white:      #ffffff;
+    --gold:       #b07d10;
+    --gold-dk:    #92610a;
+    --gold-lt:    #f5ecd4;
+    --gold-pale:  #fdf8ed;
+    --teal:       #0f6b6b;
+    --teal-lt:    #e8f5f5;
+    --green:      #1a5c2e;
+    --green-lt:   #e8f5ec;
+    /* sidebar palette — all readable on #12161f */
+    --sb-text:    #c8d0de;
+    --sb-muted:   #8a96b0;
+    --sb-dim:     #6a7890;
+    --sb-label:   #7a8ea8;
+    --rad:        7px;
+    --font-d:     'Cormorant Garamond', Georgia, serif;
+    --font-b:     'Source Serif 4', Georgia, serif;
+    --font-m:     'IBM Plex Mono', monospace;
     --s1: 0 1px 3px rgba(26,31,46,.07);
     --s2: 0 4px 12px rgba(26,31,46,.09), 0 2px 4px rgba(26,31,46,.06);
 }
@@ -137,12 +144,14 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
     min-width: 270px !important; max-width: 270px !important;
 }
 [data-testid="stSidebar"] > div { padding: 0 !important; }
-[data-testid="stSidebar"] * { color: #8a96b0 !important; }
+/* Reset all sidebar text to a readable muted blue-grey */
+[data-testid="stSidebar"] * { color: var(--sb-muted) !important; }
 
 .sb-brand { padding: 22px 18px 16px; border-bottom: 1px solid #1e2535; margin-bottom: 4px; }
 .sb-brand-title { font-family: var(--font-d) !important; font-size: 1.1rem; color: #f0ece4 !important; font-weight: 600; }
 .sb-brand-sub { font-family: var(--font-m) !important; font-size: 0.57rem; color: var(--gold) !important; letter-spacing: 2px; text-transform: uppercase; margin-top: 3px; }
-.sb-label { font-family: var(--font-m) !important; font-size: 0.55rem !important; color: #2d3a50 !important; letter-spacing: 2.5px; text-transform: uppercase; padding: 14px 18px 6px; display: block; }
+/* Section labels — visible on dark */
+.sb-label { font-family: var(--font-m) !important; font-size: 0.55rem !important; color: var(--sb-label) !important; letter-spacing: 2.5px; text-transform: uppercase; padding: 14px 18px 6px; display: block; }
 
 /* Radio as nav list */
 [data-testid="stSidebar"] [data-testid="stRadio"] { display: block !important; }
@@ -150,12 +159,12 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
 [data-testid="stSidebar"] [data-testid="stRadio"] label {
     background: transparent !important; border: none !important; border-radius: 0 !important;
     padding: 9px 18px !important; margin: 0 !important;
-    font-family: var(--font-m) !important; font-size: 0.71rem !important; color: #5a6a86 !important;
+    font-family: var(--font-m) !important; font-size: 0.71rem !important; color: var(--sb-muted) !important;
     cursor: pointer; display: flex !important; align-items: center !important;
     border-left: 2px solid transparent !important; transition: all 0.15s !important; width: 100% !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-    background: rgba(255,255,255,0.03) !important; color: #b0bcd4 !important;
+    background: rgba(255,255,255,0.03) !important; color: var(--sb-text) !important;
     border-left-color: rgba(176,125,16,0.4) !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
@@ -174,8 +183,8 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
 .text-miss { color: #ef4444 !important; }
 
 [data-testid="stSidebar"] .stButton > button {
-    background: transparent !important; color: #4a5a72 !important;
-    border: 1px solid #1e2535 !important; border-radius: 5px !important;
+    background: transparent !important; color: var(--sb-muted) !important;
+    border: 1px solid #2a3448 !important; border-radius: 5px !important;
     font-family: var(--font-m) !important; font-size: 0.62rem !important;
     letter-spacing: 1px !important; text-transform: uppercase !important;
     padding: 8px 14px !important; margin: 2px 18px !important;
@@ -185,22 +194,26 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
     border-color: var(--gold) !important; color: var(--gold) !important;
     background: rgba(176,125,16,0.05) !important;
 }
-.sb-footer { padding: 12px 18px 20px; font-family: var(--font-m) !important; font-size: 0.56rem; color: #1e2a3a !important; line-height: 2.1; }
+/* Sidebar footer — visible on dark background */
+.sb-footer { padding: 12px 18px 20px; font-family: var(--font-m) !important; font-size: 0.56rem; color: var(--sb-dim) !important; line-height: 2.1; }
 
 /* ── MASTHEAD ── */
 .masthead { background: #12161f; padding: 32px 40px 28px; margin: -1rem -1rem 0 -1rem; }
 .mh-flag { display:flex; align-items:center; justify-content:space-between; padding-bottom:13px; margin-bottom:20px; border-bottom:1px solid rgba(176,125,16,0.3); }
 .mh-flag-l { font-family:var(--font-m); font-size:0.6rem; color:var(--gold); letter-spacing:2.5px; text-transform:uppercase; }
-.mh-flag-r { font-family:var(--font-m); font-size:0.58rem; color:#2d3a50; letter-spacing:1.5px; }
+/* date/engine label — was invisible #2d3a50, now readable */
+.mh-flag-r { font-family:var(--font-m); font-size:0.58rem; color:var(--sb-muted); letter-spacing:1.5px; }
 .mh-headline { font-family:var(--font-d); font-size:clamp(2.6rem,4vw,4rem); font-weight:400; color:#f0ece4; line-height:1.0; letter-spacing:-1.5px; margin-bottom:10px; }
 .mh-headline strong { font-weight:600; }
 .mh-headline em { font-style:italic; color:var(--gold); }
-.mh-deck { font-family:var(--font-b); font-size:0.92rem; color:#4a5a72; font-weight:300; line-height:1.6; max-width:520px; margin-bottom:22px; }
+/* tagline — was invisible #4a5a72, now readable */
+.mh-deck { font-family:var(--font-b); font-size:0.92rem; color:var(--sb-text); font-weight:300; line-height:1.6; max-width:520px; margin-bottom:22px; }
 .mh-stats { display:flex; gap:0; border-top:1px solid #1e2535; padding-top:16px; }
 .mh-stat { padding:0 28px 0 0; margin-right:28px; border-right:1px solid #1e2535; }
 .mh-stat:last-child { border-right:none; }
 .mh-stat-n { font-family:var(--font-d); font-size:1.85rem; font-weight:300; color:#f0ece4; line-height:1; }
-.mh-stat-l { font-family:var(--font-m); font-size:0.53rem; color:#2d3a50; letter-spacing:2px; text-transform:uppercase; margin-top:4px; }
+/* stat labels — was invisible #2d3a50, now readable */
+.mh-stat-l { font-family:var(--font-m); font-size:0.53rem; color:var(--sb-label); letter-spacing:2px; text-transform:uppercase; margin-top:4px; }
 
 /* ── SECTIONS ── */
 .sec-eyebrow { font-family:var(--font-m); font-size:0.57rem; letter-spacing:2.5px; text-transform:uppercase; color:var(--gold-dk); margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--gold-lt); }
@@ -218,66 +231,62 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
     background: var(--gold-pale) !important; border-color: var(--gold) !important; box-shadow: var(--s2) !important;
 }
 .stButton > button:active { transform: translateY(1px) !important; box-shadow: none !important; }
-/* Secondary - second column button */
 div[data-testid="column"] + div[data-testid="column"] .stButton > button {
     color: var(--ink-mid) !important; border-color: var(--paper-2) !important; background: var(--paper-1) !important;
 }
 div[data-testid="column"] + div[data-testid="column"] .stButton > button:hover {
-    background: var(--paper-2) !important; border-color: var(--ink-faint) !important; color: var(--ink) !important;
+    background: var(--paper-2) !important; border-color: var(--ink-light) !important; color: var(--ink) !important;
 }
 
 /* ── REPORT ── */
-.report-shell { 
-    background: #12161f; /* Matches your sidebar background */
-    border: 1px solid #1e2535; 
-    border-top: 4px solid var(--gold); 
-    border-radius: var(--rad); 
-    box-shadow: var(--s2); 
-    overflow: hidden; 
-    margin-bottom: 16px; 
+.report-shell {
+    background: var(--white);
+    border: 1px solid #e0d8c8;
+    border-top: 4px solid var(--gold);
+    border-radius: var(--rad);
+    box-shadow: var(--s2);
+    overflow: hidden;
+    margin-bottom: 16px;
 }
-
-.report-top { 
-    display: flex; 
-    align-items: center; 
-    justify-content: space-between; 
-    padding: 11px 20px; 
-    background: #1a1f2e; /* Slightly lighter dark for the header */
-    border-bottom: 1px solid #2d3a50; 
+.report-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 20px;
+    background: var(--paper-1);
+    border-bottom: 1px solid #e0d8c8;
 }
-
-.rt-date { font-family: var(--font-m); font-size: 0.62rem; color: var(--gold); font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; }
-.rt-engine { font-family: var(--font-m); font-size: 0.57rem; color: #8a96b0; letter-spacing: 1px; }
-
-.report-body { padding: 22px 26px 18px; color: #ffffff !important; } /* Forced white text */
-
-/* Fix Typography within the summary */
-.report-body h2 { 
-    font-family: var(--font-d) !important; 
-    font-size: 1.2rem !important; 
-    color: var(--gold) !important; 
-    border-bottom: 1px solid #2d3a50 !important; 
+.rt-date   { font-family: var(--font-m); font-size: 0.62rem; color: var(--gold-dk); font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; }
+.rt-engine { font-family: var(--font-m); font-size: 0.57rem; color: var(--ink-light); letter-spacing: 1px; }
+.report-body { padding: 22px 26px 18px; color: var(--ink) !important; }
+.report-body h2 {
+    font-family: var(--font-d) !important;
+    font-size: 1.2rem !important;
+    color: var(--ink) !important;
+    border-bottom: 1px solid #e0d8c8 !important;
+    margin-top: 1.4em !important;
 }
-.report-body p, .report-body li { 
-    font-family: var(--font-b) !important; 
-    font-size: 1.05rem !important; /* Slightly larger for readability on dark */
-    color: #e2e8f0 !important; /* Crisp off-white */
-    line-height: 1.8 !important; 
+.report-body h2:first-child { margin-top: 0 !important; }
+.report-body p, .report-body li {
+    font-family: var(--font-b) !important;
+    font-size: 1.0rem !important;
+    color: var(--ink-mid) !important;
+    line-height: 1.8 !important;
 }
-.report-body strong { color: var(--gold) !important; font-weight: 600 !important; }
-
-.report-foot { 
-    display: flex; 
-    gap: 7px; 
-    padding: 11px 20px; 
-    background: #1a1f2e; 
-    border-top: 1px solid #2d3a50; 
+.report-body ul { padding-left: 1.4em !important; }
+.report-body strong { color: var(--ink) !important; font-weight: 600 !important; }
+.report-foot {
+    display: flex;
+    gap: 7px;
+    padding: 11px 20px;
+    background: var(--paper-1);
+    border-top: 1px solid #e0d8c8;
 }
 
 /* ── MEETING CARDS ── */
 .meeting-card { background:var(--white); border:1px solid #e0d8c8; border-left:3px solid var(--gold); border-radius:var(--rad); padding:13px 15px 11px; margin-bottom:9px; box-shadow:var(--s1); transition:box-shadow 0.15s; }
 .meeting-card:hover { box-shadow:var(--s2); }
-.mc-date { font-family:var(--font-m); font-size:0.58rem; color:var(--gold-dk); font-weight:500; letter-spacing:2px; text-transform:uppercase; margin-bottom:4px; }
+.mc-date  { font-family:var(--font-m); font-size:0.58rem; color:var(--gold-dk); font-weight:500; letter-spacing:2px; text-transform:uppercase; margin-bottom:4px; }
 .mc-title { font-family:var(--font-d); font-size:0.98rem; color:var(--ink); font-weight:600; margin-bottom:9px; }
 .mc-links { display:flex; gap:5px; flex-wrap:wrap; align-items:center; }
 .mcl { font-family:var(--font-m); font-size:0.57rem; padding:3px 8px; border-radius:3px; text-decoration:none !important; border:1px solid #d4c9a8; color:var(--gold-dk); background:var(--gold-pale); transition:all 0.12s; display:inline-flex; align-items:center; gap:3px; }
@@ -291,34 +300,51 @@ div[data-testid="column"] + div[data-testid="column"] .stButton > button:hover {
 /* ── ARCHIVE ── */
 .arc-card { display:flex; align-items:center; gap:10px; padding:11px 14px; background:var(--white); border:1px solid #e0d8c8; border-radius:var(--rad); margin-bottom:7px; box-shadow:var(--s1); transition:all 0.12s; }
 .arc-card:hover { box-shadow:var(--s2); border-color:#cfc4aa; }
-.arc-dot { width:7px; height:7px; border-radius:50%; background:var(--gold); flex-shrink:0; }
-.arc-body { flex:1; min-width:0; }
-.arc-date { font-family:var(--font-m); font-size:0.59rem; color:var(--gold-dk); letter-spacing:1.5px; text-transform:uppercase; font-weight:500; }
-.arc-title { font-family:var(--font-b); font-size:0.83rem; color:var(--ink-mid); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.arc-engine { font-family:var(--font-m); font-size:0.54rem; color:var(--ink-faint); margin-top:2px; }
+.arc-dot    { width:7px; height:7px; border-radius:50%; background:var(--gold); flex-shrink:0; }
+.arc-body   { flex:1; min-width:0; }
+.arc-date   { font-family:var(--font-m); font-size:0.59rem; color:var(--gold-dk); letter-spacing:1.5px; text-transform:uppercase; font-weight:500; }
+.arc-title  { font-family:var(--font-b); font-size:0.83rem; color:var(--ink-mid); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* engine label — was ink-faint #a0aec0, now readable */
+.arc-engine { font-family:var(--font-m); font-size:0.54rem; color:var(--ink-light); margin-top:2px; }
 
-/* ── STATS ── */
+/* ── STATS BAR ── */
 .stats-bar { display:flex; background:var(--white); border:1px solid #e0d8c8; border-radius:var(--rad); overflow:hidden; box-shadow:var(--s1); margin-bottom:18px; }
 .sc { flex:1; padding:14px 16px; border-right:1px solid #e0d8c8; text-align:center; }
 .sc:last-child { border-right:none; }
 .sc-n { font-family:var(--font-d); font-size:1.7rem; font-weight:300; color:var(--ink); line-height:1; }
-.sc-l { font-family:var(--font-m); font-size:0.53rem; color:var(--ink-faint); letter-spacing:2px; text-transform:uppercase; margin-top:4px; }
+/* stat labels — was ink-faint, now readable */
+.sc-l { font-family:var(--font-m); font-size:0.53rem; color:var(--ink-light); letter-spacing:2px; text-transform:uppercase; margin-top:4px; }
 
 /* ── INPUTS ── */
 .stDateInput input { font-family:var(--font-m) !important; font-size:0.78rem !important; border-color:#cec5b0 !important; border-radius:var(--rad) !important; background:var(--white) !important; color:var(--ink) !important; padding:9px 12px !important; }
 .stDateInput input:focus { border-color:var(--gold) !important; box-shadow:0 0 0 3px var(--gold-lt) !important; }
-label[data-testid="stWidgetLabel"] p { font-family:var(--font-m) !important; font-size:0.58rem !important; color:var(--ink-light) !important; letter-spacing:1.5px !important; text-transform:uppercase !important; }
+label[data-testid="stWidgetLabel"] p { font-family:var(--font-m) !important; font-size:0.58rem !important; color:var(--ink-mid) !important; letter-spacing:1.5px !important; text-transform:uppercase !important; }
 
-/* ── MISC ── */
+/* ── STREAMLIT OVERRIDES ── */
+/* caption() text — Streamlit default is very light */
+[data-testid="stCaptionContainer"] p { color: var(--ink-light) !important; font-family: var(--font-m) !important; font-size: 0.72rem !important; }
 [data-testid="stStatusWidget"] { background:var(--white) !important; border:1px solid #e0d8c8 !important; border-radius:var(--rad) !important; font-family:var(--font-m) !important; font-size:0.71rem !important; box-shadow:var(--s1) !important; }
+/* Status widget text inside */
+[data-testid="stStatusWidget"] p, [data-testid="stStatusWidget"] span { color: var(--ink) !important; }
 .stAlert { font-family:var(--font-b) !important; font-size:0.87rem !important; border-radius:var(--rad) !important; }
+.stAlert p { color: var(--ink) !important; }
 .stSpinner > div { border-top-color:var(--gold) !important; }
+/* Streamlit write() and markdown() default text */
+[data-testid="stMarkdownContainer"] p { color: var(--ink-mid) !important; }
+
+/* ── INFO BOX ── */
 .info-box { background:var(--white); border:1px solid #e0d8c8; border-radius:var(--rad); padding:16px 18px; margin-top:16px; box-shadow:var(--s1); }
 .info-box-title { font-family:var(--font-m); font-size:0.57rem; color:var(--gold-dk); letter-spacing:2.5px; text-transform:uppercase; margin-bottom:7px; font-weight:500; }
-.info-box-body { font-family:var(--font-b); font-size:0.84rem; color:var(--ink-mid); line-height:1.7; }
+.info-box-body  { font-family:var(--font-b); font-size:0.84rem; color:var(--ink-mid); line-height:1.7; }
+
+/* ── EMPTY STATE ── */
 .empty-state { text-align:center; padding:28px 20px; background:var(--white); border:1px dashed #d4c9a8; border-radius:var(--rad); }
-.empty-state-icon { font-size:1.5rem; margin-bottom:8px; opacity:0.4; }
-.empty-state-text { font-family:var(--font-m); font-size:0.63rem; color:var(--ink-faint); line-height:1.9; }
+.empty-state-icon { font-size:1.5rem; margin-bottom:8px; opacity:0.6; }
+/* was ink-faint #a0aec0, now readable */
+.empty-state-text { font-family:var(--font-m); font-size:0.63rem; color:var(--ink-light); line-height:1.9; }
+
+/* ── INLINE STYLE OVERRIDES for no-docs / pending spans ── */
+[style*="ink-faint"] { color: var(--ink-light) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -346,10 +372,14 @@ def _load_from_supabase() -> list[dict]:
         logger.info(f"Archive: {len(rows)} rows loaded from Supabase")
         return rows
     except ImportError:
-        logger.warning("Archive: st-supabase-connection not installed")
+        logger.debug("Archive: st-supabase-connection not installed — skipping")
         return []
     except Exception as e:
-        logger.error(f"Archive: Supabase error — {e}", exc_info=True)
+        err = str(e).lower()
+        if any(x in err for x in ("nodename", "servname", "connect", "network", "dns", "timeout")):
+            logger.debug("Archive: Supabase unreachable (no VPN?) — running in-memory only")
+        else:
+            logger.error(f"Archive: Supabase unexpected error — {e}", exc_info=True)
         return []
 
 
@@ -558,25 +588,24 @@ with col_left:
         safe_date   = html.escape(str(meta.get("date", "—")))
         safe_engine = html.escape(BACKENDS.get(backend, {}).get("label", backend).upper())
 
-        # BUG-FIX: Streamlit sanitizes each st.markdown call independently,
-        # so splitting an open <div> across multiple calls strips the unclosed
-        # tags and breaks the DOM on rerun → black screen.
-        # Fix: convert summary markdown → HTML and render the entire shell
-        # in a single unsafe_allow_html call so the DOM is always complete.
+        # Convert markdown to HTML and render the ENTIRE report in ONE st.markdown call.
+        # Splitting across multiple calls causes Streamlit to close divs independently —
+        # summary content never lands inside .report-body so CSS selectors never apply.
         import markdown as _md
         summary_html = _md.markdown(
             st.session_state.current_summary,
-            extensions=["nl2br", "sane_lists"],
+            extensions=["extra", "nl2br"],
         )
-        no_docs = '<span style="font-family:var(--font-m);font-size:.58rem;color:var(--ink-faint)">No documents on record for this meeting</span>'
-
+        no_docs = '<span style="font-family:var(--font-m);font-size:.58rem;color:var(--ink-light)">No documents on record for this meeting</span>'
         st.markdown(f"""
         <div class="report-shell">
           <div class="report-top">
             <span class="rt-date">{safe_date}</span>
             <span class="rt-engine">via {safe_engine}</span>
           </div>
-          <div class="report-body">{summary_html}</div>
+          <div class="report-body">
+            {summary_html}
+          </div>
           <div class="report-foot">
             {links or no_docs}
           </div>
@@ -706,7 +735,7 @@ with col_right:
     if st.session_state.get("range_meetings"):
         meetings      = st.session_state.range_meetings
         archive_dates = {r.get("meeting_date") for r in archived_all}
-        st.caption(f"{len(meetings)} meeting(s) · RSS feed — published agendas only")
+        st.markdown(f'<p style="font-family:var(--font-m);font-size:0.72rem;color:var(--ink-light);margin:4px 0">{len(meetings)} meeting(s) · RSS feed — published agendas only</p>', unsafe_allow_html=True)
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
         for i, m in enumerate(meetings):
@@ -716,7 +745,7 @@ with col_right:
             safe_name  = html.escape(m.get("name", "City Council"))
             safe_mdate = html.escape(m["date"])
             badge      = '<span class="mc-badge">✓ Archived</span>' if already else ""
-            no_links   = '<span style="font-family:var(--font-m);font-size:.56rem;color:var(--ink-faint)">Documents pending publication</span>'
+            no_links   = '<span style="font-family:var(--font-m);font-size:.56rem;color:var(--ink-light)">Documents pending publication</span>'
 
             st.markdown(f"""
             <div class="meeting-card">
