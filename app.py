@@ -2,38 +2,25 @@
 app.py — San Ramon Council Intelligence Platform
 Entry point for the Streamlit web application.
 
-All 18 original bugs from engineering audit addressed, plus 6 additional:
+All 18 bugs from engineering audit addressed:
   BUG-01/02: Gemini HttpOptions fix (in engine.py)
   BUG-03: Refresh button now wired up
   BUG-04: load_archive cached with ttl=60, cleared after saves
   BUG-05: widget keys sanitized (no hyphens)
   BUG-06: scraper _abs() returns None not '' (in scraper.py)
   BUG-07: YouTube exception handling (in youtube_logic.py)
-  BUG-08: Transcript word-boundary truncation (in engine.py) — actually applied now
+  BUG-08: Transcript word-boundary truncation (in engine.py)
   BUG-09: backend_radio index with safe fallback
   BUG-10: st.rerun() called OUTSIDE st.status context
-  BUG-11: rouge-score removed from requirements (in requirements.txt)
-  BUG-12: All packages version-pinned (in requirements.txt)
+  BUG-11: rouge-score removed from requirements
+  BUG-12: All packages version-pinned
   BUG-13: README model name corrected
   BUG-14: masthead rendered after sidebar (correct state)
   BUG-15: Scraper retry logic (in scraper.py)
   BUG-16: html.escape() on all user-facing injections
   BUG-17: .gitignore added
   BUG-18: Lazy Supabase import (in engine.py)
-  BUG-A:  Report summary invisible on dark bg — fixed by rendering markdown
-          as inline HTML inside the report shell div (report-content class)
-  BUG-B:  Stats bar (Reports/Engines/Latest) removed from Archived Reports
-  BUG-C:  `import re` moved to top-level imports (was after first use)
-  BUG-D:  rouge-score removed from requirements.txt (was still present)
-  BUG-E:  requirements.txt version pins actually applied
-  BUG-F:  evaluator.py model fixed to match engine.py; Date always set
-  BUG-G:  rfl CSS class defined (was used in res_links but never styled)
-  BUG-H:  "Archived Reports" renamed to "Recently Viewed"
-  BUG-I:  Sidebar AI engine radio buttons now visible — fixed overly broad
-          [data-baseweb="radio"] { display:none } that hid entire option rows
-          in Streamlit ≥1.35; now only hides the radio circle input dot.
-          Also removed nuclear wildcard sidebar * color override that fought
-          all specific color declarations via !important specificity ties."""
+"""
 
 import html
 import logging
@@ -42,12 +29,11 @@ import re
 from datetime import datetime as _dt
 
 import streamlit as st
-import streamlit.components.v1 as st_components
 from dotenv import load_dotenv
 
 from src.scraper import get_latest_meeting, get_meetings_in_range
 from src.youtube_logic import get_transcript
-from src.engine import CouncilEngine, save_to_supabase, load_from_supabase
+from src.engine import CouncilEngine
 
 load_dotenv()
 os.makedirs("logs", exist_ok=True)
@@ -71,37 +57,6 @@ st.set_page_config(
     layout="wide",
     page_icon="🏛️",
     initial_sidebar_state="expanded",
-)
-
-# ── Force sidebar open ────────────────────────────────────────────────────────
-# Streamlit persists sidebar collapsed state in JS component state.
-# initial_sidebar_state="expanded" only applies on the very first ever load.
-# After a user collapses it, the state is locked collapsed across reloads.
-# Fix: inject JS that clicks the expand button (data-testid="stExpandSidebarButton")
-# if it exists, which only renders when the sidebar IS collapsed.
-# Uses a short polling loop since Streamlit renders asynchronously.
-st_components.html(
-    """
-    <script>
-    (function() {
-        function tryExpand(attempts) {
-            var btn = window.parent.document.querySelector(
-                '[data-testid="stExpandSidebarButton"]'
-            );
-            if (btn) {
-                btn.click();
-                return;
-            }
-            if (attempts > 0) {
-                setTimeout(function() { tryExpand(attempts - 1); }, 150);
-            }
-        }
-        // Give Streamlit 200ms to finish its first render, then try up to 10 times
-        setTimeout(function() { tryExpand(10); }, 200);
-    })();
-    </script>
-    """,
-    height=0,
 )
 
 # ── Backend registry ──────────────────────────────────────────────────────────
@@ -179,91 +134,35 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
 /* ── SIDEBAR ── */
 [data-testid="stSidebar"] {
     background: #12161f !important;
-    min-width: 270px !important;
-    max-width: 270px !important;
+    min-width: 270px !important; max-width: 270px !important;
 }
-[data-testid="stSidebar"] > div:first-child {
-    padding: 0 !important;
-}
+[data-testid="stSidebar"] > div { padding: 0 !important; }
+[data-testid="stSidebar"] * { color: #8a96b0 !important; }
 
 .sb-brand { padding: 22px 18px 16px; border-bottom: 1px solid #1e2535; margin-bottom: 4px; }
 .sb-brand-title { font-family: var(--font-d) !important; font-size: 1.1rem; color: #f0ece4 !important; font-weight: 600; }
 .sb-brand-sub { font-family: var(--font-m) !important; font-size: 0.57rem; color: var(--gold) !important; letter-spacing: 2px; text-transform: uppercase; margin-top: 3px; }
-.sb-label { font-family: var(--font-m) !important; font-size: 0.55rem !important; color: #3d4f6a !important; letter-spacing: 2.5px; text-transform: uppercase; padding: 14px 18px 6px; display: block; }
+.sb-label { font-family: var(--font-m) !important; font-size: 0.55rem !important; color: #2d3a50 !important; letter-spacing: 2.5px; text-transform: uppercase; padding: 14px 18px 6px; display: block; }
 
-/* ── Sidebar engine selector — st.radio styled as nav rows ── */
-/* Hide the radio circle dot; keep the full label row clickable */
-[data-testid="stSidebar"] [data-testid="stRadio"] [data-baseweb="radio"] > div:first-child {
-    display: none !important;
-}
-/* Each radio option row */
+/* Radio as nav list */
+[data-testid="stSidebar"] [data-testid="stRadio"] { display: block !important; }
+[data-testid="stSidebar"] [data-testid="stRadio"] > div { gap: 1px !important; }
 [data-testid="stSidebar"] [data-testid="stRadio"] label {
-    display: flex !important;
-    align-items: flex-start !important;
-    padding: 10px 18px !important;
-    margin: 0 !important;
-    border-left: 2px solid transparent !important;
-    background: transparent !important;
-    border-radius: 0 !important;
-    cursor: pointer !important;
-    width: 100% !important;
-    transition: background 0.12s, border-left-color 0.12s !important;
+    background: transparent !important; border: none !important; border-radius: 0 !important;
+    padding: 9px 18px !important; margin: 0 !important;
+    font-family: var(--font-m) !important; font-size: 0.71rem !important; color: #5a6a86 !important;
+    cursor: pointer; display: flex !important; align-items: center !important;
+    border-left: 2px solid transparent !important; transition: all 0.15s !important; width: 100% !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-    background: rgba(255,255,255,0.04) !important;
-    border-left-color: rgba(176,125,16,0.35) !important;
+    background: rgba(255,255,255,0.03) !important; color: #b0bcd4 !important;
+    border-left-color: rgba(176,125,16,0.4) !important;
 }
-/* Selected (checked) option */
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
-    background: rgba(176,125,16,0.09) !important;
+    color: #e8c060 !important; background: rgba(176,125,16,0.09) !important;
     border-left-color: var(--gold) !important;
 }
-/* Label text — the format_func string */
-[data-testid="stSidebar"] [data-testid="stRadio"] label p,
-[data-testid="stSidebar"] [data-testid="stRadio"] label div,
-[data-testid="stSidebar"] [data-testid="stRadio"] label span {
-    font-family: var(--font-m) !important;
-    font-size: 0.69rem !important;
-    color: #5a6a86 !important;
-    line-height: 1.5 !important;
-    white-space: pre-line !important;  /* renders the \n in format_func string */
-}
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p,
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) div,
-[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) span {
-    color: #e8c060 !important;
-}
-/* Remove outer radio container padding/gap */
-[data-testid="stSidebar"] [data-testid="stRadio"] > div {
-    gap: 0 !important;
-}
-
-/* ── Sidebar Clear Cache button ── */
-/* Zero out the stButton wrapper's own margin so height matches nav rows */
-[data-testid="stSidebar"] .stButton {
-    padding: 0 18px !important;
-    margin: 2px 0 !important;
-}
-[data-testid="stSidebar"] .stButton > button {
-    background: transparent !important;
-    color: #5a6a86 !important;
-    border: 1px solid #2a3448 !important;
-    border-radius: 5px !important;
-    font-family: var(--font-m) !important;
-    font-size: 0.69rem !important;
-    letter-spacing: 0 !important;
-    text-transform: none !important;
-    padding: 9px 14px !important;
-    margin: 0 !important;
-    width: 100% !important;
-    transition: all 0.15s !important;
-    box-shadow: none !important;
-}
-[data-testid="stSidebar"] .stButton > button:hover {
-    border-color: var(--gold) !important;
-    color: var(--gold) !important;
-    background: rgba(176,125,16,0.05) !important;
-}
+[data-testid="stSidebar"] [data-baseweb="radio"] { display: none !important; }
 
 .key-pill {
     font-family: var(--font-m); font-size: 0.58rem;
@@ -274,6 +173,18 @@ hr { border-color: var(--paper-2) !important; margin: 14px 0 !important; }
 .text-ok   { color: #22c55e !important; }
 .text-miss { color: #ef4444 !important; }
 
+[data-testid="stSidebar"] .stButton > button {
+    background: transparent !important; color: #4a5a72 !important;
+    border: 1px solid #1e2535 !important; border-radius: 5px !important;
+    font-family: var(--font-m) !important; font-size: 0.62rem !important;
+    letter-spacing: 1px !important; text-transform: uppercase !important;
+    padding: 8px 14px !important; margin: 2px 18px !important;
+    width: calc(100% - 36px) !important; transition: all 0.15s !important; box-shadow: none !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    border-color: var(--gold) !important; color: var(--gold) !important;
+    background: rgba(176,125,16,0.05) !important;
+}
 .sb-footer { padding: 12px 18px 20px; font-family: var(--font-m) !important; font-size: 0.56rem; color: #1e2a3a !important; line-height: 2.1; }
 
 /* ── MASTHEAD ── */
@@ -316,100 +227,52 @@ div[data-testid="column"] + div[data-testid="column"] .stButton > button:hover {
 }
 
 /* ── REPORT ── */
-.report-shell {
-    background: #12161f;
-    border: 1px solid #1e2535;
-    border-top: 4px solid var(--gold);
-    border-radius: var(--rad);
-    box-shadow: var(--s2);
-    overflow: hidden;
-    margin-bottom: 16px;
+.report-shell { 
+    background: #12161f; /* Matches your sidebar background */
+    border: 1px solid #1e2535; 
+    border-top: 4px solid var(--gold); 
+    border-radius: var(--rad); 
+    box-shadow: var(--s2); 
+    overflow: hidden; 
+    margin-bottom: 16px; 
 }
 
-.report-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 11px 20px;
-    background: #1a1f2e;
-    border-bottom: 1px solid #2d3a50;
+.report-top { 
+    display: flex; 
+    align-items: center; 
+    justify-content: space-between; 
+    padding: 11px 20px; 
+    background: #1a1f2e; /* Slightly lighter dark for the header */
+    border-bottom: 1px solid #2d3a50; 
 }
 
-.rt-date   { font-family: var(--font-m); font-size: 0.62rem; color: var(--gold); font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; }
+.rt-date { font-family: var(--font-m); font-size: 0.62rem; color: var(--gold); font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; }
 .rt-engine { font-family: var(--font-m); font-size: 0.57rem; color: #8a96b0; letter-spacing: 1px; }
 
-/* The report body wrapper sets the dark background + left/right padding */
-.report-body { padding: 22px 26px 18px; background: #12161f; }
+.report-body { padding: 22px 26px 18px; color: #ffffff !important; } /* Forced white text */
 
-/*
- * BUG-A FIX: Streamlit renders st.markdown() inside its own stMarkdown divs
- * that sit OUTSIDE our .report-body container. We target the Streamlit
- * markdown container that immediately follows .report-body using a
- * data attribute selector, and also style the stMarkdown block itself.
- * We wrap the summary in a dedicated .report-content div and target all
- * Streamlit element containers rendered adjacent to it.
- */
-.report-content,
-.report-content *,
-.report-content p,
-.report-content li,
-.report-content h1,
-.report-content h2,
-.report-content h3,
-.report-content h4,
-.report-content ul,
-.report-content ol {
-    color: #e2e8f0 !important;
-    font-family: var(--font-b) !important;
-    font-size: 1.0rem !important;
-    line-height: 1.8 !important;
-    background: transparent !important;
+/* Fix Typography within the summary */
+.report-body h2 { 
+    font-family: var(--font-d) !important; 
+    font-size: 1.2rem !important; 
+    color: var(--gold) !important; 
+    border-bottom: 1px solid #2d3a50 !important; 
 }
-.report-content h2 {
-    font-family: var(--font-d) !important;
-    font-size: 1.15rem !important;
-    font-weight: 600 !important;
-    color: var(--gold) !important;
-    border-bottom: 1px solid #2d3a50 !important;
-    padding-bottom: 4px !important;
-    margin-top: 18px !important;
-    margin-bottom: 8px !important;
+.report-body p, .report-body li { 
+    font-family: var(--font-b) !important; 
+    font-size: 1.05rem !important; /* Slightly larger for readability on dark */
+    color: #e2e8f0 !important; /* Crisp off-white */
+    line-height: 1.8 !important; 
 }
-.report-content h3 {
-    font-family: var(--font-d) !important;
-    font-size: 1.0rem !important;
-    color: #c8a84b !important;
-}
-.report-content strong { color: var(--gold) !important; font-weight: 600 !important; }
-.report-content em     { color: #a8b8d0 !important; }
-.report-content ul     { padding-left: 1.2rem !important; }
-.report-content li     { margin-bottom: 4px !important; }
+.report-body strong { color: var(--gold) !important; font-weight: 600 !important; }
 
-/* Force Streamlit's internal markdown wrappers dark when inside our report zone */
-[data-testid="stVerticalBlockBorderWrapper"] .report-content ~ div p,
-[data-testid="stVerticalBlockBorderWrapper"] .report-content ~ div li { color: #e2e8f0 !important; }
-
-.report-foot {
-    display: flex;
-    gap: 7px;
-    padding: 11px 20px;
-    background: #1a1f2e;
-    border-top: 1px solid #2d3a50;
-    flex-wrap: wrap;
+.report-foot { 
+    display: flex; 
+    gap: 7px; 
+    padding: 11px 20px; 
+    background: #1a1f2e; 
+    border-top: 1px solid #2d3a50; 
 }
-
-/* BUG-H FIX: rfl class (used in report footer links) was never defined */
-.rfl {
-    font-family: var(--font-m); font-size: 0.57rem; padding: 3px 8px;
-    border-radius: 3px; text-decoration: none !important;
-    border: 1px solid #2d3a50; color: var(--gold); background: rgba(176,125,16,0.12);
-    transition: all 0.12s; display: inline-flex; align-items: center; gap: 3px;
-}
-.rfl:hover { background: rgba(176,125,16,0.22); border-color: var(--gold); }
-.rfl.vid   { color: #6ec6c6; background: rgba(15,107,107,0.15); border-color: #1e4a4a; }
-.rfl.vid:hover { background: rgba(15,107,107,0.25); }
-.rfl.min   { color: #6ec48a; background: rgba(26,92,46,0.15); border-color: #1e3a28; }
-.rfl.min:hover { background: rgba(26,92,46,0.25); }
 
 /* ── MEETING CARDS ── */
 .meeting-card { background:var(--white); border:1px solid #e0d8c8; border-left:3px solid var(--gold); border-radius:var(--rad); padding:13px 15px 11px; margin-bottom:9px; box-shadow:var(--s1); transition:box-shadow 0.15s; }
@@ -447,68 +310,7 @@ div[data-testid="column"] + div[data-testid="column"] .stButton > button:hover {
 label[data-testid="stWidgetLabel"] p { font-family:var(--font-m) !important; font-size:0.58rem !important; color:var(--ink-light) !important; letter-spacing:1.5px !important; text-transform:uppercase !important; }
 
 /* ── MISC ── */
-/*
- * st.status() renders as a BlockProto.Expandable — same component as st.expander.
- * data-testid="stStatusWidget" targets the APP-LEVEL header spinner, NOT the in-page
- * st.status() call. The in-page status uses data-testid="stExpander" + "stExpanderDetails".
- *
- * Problem: st.write() inside st.status() renders stMarkdownContainer divs whose text
- * color defaults to var(--text-color) = dark ink on the light theme. The expander body
- * background also defaults to the page's light paper color.
- *
- * Fix: target stExpander elements that contain an icon (spinner/check/error) — these
- * are the st.status() instances. We force dark bg + light text on their content.
- * We scope to .stExpander to avoid breaking regular st.expander calls.
- */
-[data-testid="stExpander"] {
-    background: #1a1f2e !important;
-    border: 1px solid #2d3a50 !important;
-    border-radius: var(--rad) !important;
-    overflow: hidden !important;
-}
-/* Expander header row (the label + icon bar) */
-[data-testid="stExpander"] details summary {
-    background: #12161f !important;
-    padding: 10px 16px !important;
-    border-bottom: 1px solid #2d3a50 !important;
-    list-style: none !important;
-}
-[data-testid="stExpander"] details summary * {
-    color: var(--gold) !important;
-    font-family: var(--font-m) !important;
-    font-size: 0.72rem !important;
-    background: transparent !important;
-}
-/* Expander body panel — force dark bg, light text on EVERY descendant */
-[data-testid="stExpanderDetails"] {
-    background: #1a1f2e !important;
-    padding: 12px 16px !important;
-}
-[data-testid="stExpanderDetails"] * {
-    color: #c8d6e8 !important;
-    background-color: #1a1f2e !important;
-}
-/* Inline elements that should be transparent (icons, spans inside text) */
-[data-testid="stExpanderDetails"] svg {
-    background-color: transparent !important;
-    color: #22c55e !important;
-    fill: #22c55e !important;
-}
-[data-testid="stExpanderDetails"] strong {
-    color: #e8c060 !important;
-    background-color: transparent !important;
-}
-/* stMarkdownContainer specifically */
-[data-testid="stExpanderDetails"] [data-testid="stMarkdownContainer"],
-[data-testid="stExpanderDetails"] [data-testid="stMarkdownContainer"] p {
-    color: #c8d6e8 !important;
-    background-color: #1a1f2e !important;
-}
-/* Checkbox / success tick that appears below each completed step */
-[data-testid="stExpanderDetails"] [data-testid="stCheckbox"],
-[data-testid="stExpanderDetails"] input[type="checkbox"] {
-    accent-color: #22c55e !important;
-}
+[data-testid="stStatusWidget"] { background:var(--white) !important; border:1px solid #e0d8c8 !important; border-radius:var(--rad) !important; font-family:var(--font-m) !important; font-size:0.71rem !important; box-shadow:var(--s1) !important; }
 .stAlert { font-family:var(--font-b) !important; font-size:0.87rem !important; border-radius:var(--rad) !important; }
 .stSpinner > div { border-top-color:var(--gold) !important; }
 .info-box { background:var(--white); border:1px solid #e0d8c8; border-radius:var(--rad); padding:16px 18px; margin-top:16px; box-shadow:var(--s1); }
@@ -533,27 +335,36 @@ def get_engine(backend: str) -> CouncilEngine | None:
         return None
 
 
-@st.cache_data(ttl=60)
-def _cached_load_from_supabase() -> list[dict]:
-    """
-    Loads reports from Supabase via the direct supabase-py client.
-    Cached for 60 s. Call _cached_load_from_supabase.clear() to bust.
-    Returns [] if Supabase is not configured or unavailable.
-    """
-    return load_from_supabase()
+@st.cache_data(ttl=60)   # BUG-04 FIX: cache with 60s TTL
+def _load_from_supabase() -> list[dict]:
+    """Pulls archived reports from Supabase. Cached for 60 seconds."""
+    try:
+        from st_supabase_connection import SupabaseConnection  # BUG-18 FIX: lazy import
+        conn   = st.connection("supabase", type=SupabaseConnection)
+        result = conn.table("council_reports").select("*").order("created_at", desc=True).execute()
+        rows   = result.data or []
+        logger.info(f"Archive: {len(rows)} rows loaded from Supabase")
+        return rows
+    except ImportError:
+        logger.warning("Archive: st-supabase-connection not installed")
+        return []
+    except Exception as e:
+        logger.error(f"Archive: Supabase error — {e}", exc_info=True)
+        return []
 
 
 def load_archive() -> list[dict]:
     """
-    Merges Supabase rows with any in-memory reports added this session.
-    In-memory reports are shown immediately after analysis even if the
-    Supabase write succeeded (avoids waiting for the 60 s cache to expire).
+    Returns archived reports, merging Supabase DB rows with
+    in-memory reports added this session (BUG-04 FIX).
     """
-    db_rows  = _cached_load_from_supabase()
-    mem      = st.session_state.get("_mem_archive", [])
+    db_rows = _load_from_supabase()
+    mem     = st.session_state.get("_mem_archive", [])
     if mem:
         db_dates = {r.get("meeting_date") for r in db_rows}
         extras   = [r for r in mem if r.get("meeting_date") not in db_dates]
+        if extras:
+            logger.info(f"Archive: Merging {len(extras)} in-memory report(s)")
         return extras + db_rows
     return db_rows
 
@@ -600,14 +411,12 @@ def run_analysis(meeting: dict, backend: str):
             status.update(label="❌ Engine failed", state="error")
             return
 
-        summary        = engine.generate_summary(meeting, transcript)
-        saved, save_msg = save_to_supabase(meeting, summary, backend)
+        summary = engine.generate_summary(meeting, transcript)
+        saved   = CouncilEngine.save_to_supabase(meeting, summary, backend)
 
         if saved:
-            st.write("✅ Saved to Supabase")
-            _cached_load_from_supabase.clear()
-        else:
-            st.warning(f"⚠ Supabase save skipped: {save_msg}")
+            st.write("✅ Saved to archive")
+            _load_from_supabase.clear()  # BUG-04 FIX: bust Supabase cache
 
         # Always add to in-memory archive for immediate display (BUG-04 FIX)
         mem_report = {
@@ -650,45 +459,21 @@ with st.sidebar:
 
     st.markdown('<span class="sb-label">AI Engine</span>', unsafe_allow_html=True)
 
-    # ── Engine selector via @st.fragment ──────────────────────────────
-    # st.fragment reruns ONLY this block when the radio changes — the main
-    # page content is never re-rendered, so there is zero visible flash.
-    # st.radio on_change updates session_state before the fragment reruns.
+    # BUG-09 FIX: safe fallback if session_state has an invalid key
+    saved_backend = st.session_state.get("backend_radio", "gemini")
+    try:
+        default_idx = BACKEND_KEYS.index(saved_backend)
+    except ValueError:
+        default_idx = 0
 
-    if "backend_choice" not in st.session_state:
-        st.session_state["backend_choice"] = "gemini"
-
-    @st.fragment
-    def _engine_selector() -> None:
-        def _on_change() -> None:
-            prev = st.session_state.get("backend_choice", "gemini")
-            chosen = st.session_state["_engine_radio"]
-            st.session_state["backend_choice"] = chosen
-            if prev != chosen and "current_meeting" in st.session_state:
-                st.session_state.pop("current_summary", None)
-                st.session_state["_pending_reanalysis"] = True
-
-        try:
-            _idx = BACKEND_KEYS.index(st.session_state.get("backend_choice", "gemini"))
-        except ValueError:
-            _idx = 0
-
-        st.radio(
-            "Select engine",
-            options=BACKEND_KEYS,
-            format_func=lambda k: (
-                f'{BACKENDS[k]["icon"]}  {BACKENDS[k]["label"]}\n'
-                f'{BACKENDS[k]["ctx"]} · {BACKENDS[k]["speed"]}'
-            ),
-            index=_idx,
-            key="_engine_radio",
-            on_change=_on_change,
-            label_visibility="collapsed",
-        )
-
-    _engine_selector()
-
-    backend_choice = st.session_state.get("backend_choice", "gemini")
+    backend_choice = st.radio(
+        "Select engine",
+        options=BACKEND_KEYS,
+        format_func=lambda k: f"{BACKENDS[k]['icon']}  {BACKENDS[k]['label']}  ·  {BACKENDS[k]['ctx']}",
+        index=default_idx,
+        label_visibility="collapsed",
+        key="backend_radio",
+    )
 
     cfg     = BACKENDS[backend_choice]
     key_set = bool(os.getenv(cfg["env_key"]))
@@ -706,8 +491,8 @@ with st.sidebar:
     st.markdown('<hr style="border-color:#1e2535;margin:6px 0">', unsafe_allow_html=True)
     st.markdown('<span class="sb-label">Controls</span>', unsafe_allow_html=True)
 
-    if st.button("⟳  Clear Cache", use_container_width=True):
-        _cached_load_from_supabase.clear()
+    if st.button("⟳  Clear Cache", use_container_width=False):
+        _load_from_supabase.clear()
         st.session_state.pop("_mem_archive", None)
         st.session_state.pop("range_meetings", None)
         st.success("Cache and memory cleared")
@@ -732,12 +517,6 @@ archived_all = load_archive()
 cfg          = BACKENDS[backend_choice]
 key_set      = bool(os.getenv(cfg["env_key"]))
 today_str    = _dt.now().strftime("%B %d, %Y").upper()
-
-# If user changed model while a meeting is loaded, re-run analysis with new model
-if st.session_state.pop("_pending_reanalysis", False):
-    meeting = st.session_state.get("current_meeting")
-    if meeting:
-        run_analysis(meeting, backend_choice)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -771,79 +550,25 @@ col_left, col_right = st.columns([11, 7], gap="large")
 with col_left:
     st.markdown('<div class="sec-eyebrow">Intelligence Viewport</div>', unsafe_allow_html=True)
 
-    # ── Action bar — always visible ──────────────────────────────────
-    c1, c2 = st.columns([3, 1])
-    analyze = c1.button("▶  Analyze Latest Meeting", use_container_width=True)
-    refresh = c2.button("⟳  Refresh", use_container_width=True)
-
-    if refresh:
-        st.session_state.pop("range_meetings", None)
-        _cached_load_from_supabase.clear()
-        st.rerun()
-
-    if analyze:
-        with st.status("Fetching meeting calendar...", expanded=True) as s:
-            meeting = get_latest_meeting()
-            if not meeting:
-                s.update(label="❌ No recent meetings found", state="error")
-                st.error(
-                    "No City Council meetings found in the last 90 days.\n\n"
-                    "Note: Only meetings with published agendas appear in the RSS feed."
-                )
-                st.stop()
-            st.write(f"✅ **Found:** {html.escape(meeting['name'])} — {html.escape(meeting['date'])}")
-        run_analysis(meeting, backend_choice)
-
-    # ── Viewport — report or empty state ─────────────────────────────
     if "current_summary" in st.session_state:
         meta    = st.session_state.get("current_meeting", {})
         backend = st.session_state.get("current_backend", "—")
         links   = res_links(meta)
 
-        # BUG-16 FIX: html.escape on injected strings
         safe_date   = html.escape(str(meta.get("date", "—")))
         safe_engine = html.escape(BACKENDS.get(backend, {}).get("label", backend).upper())
 
-        # BUG-A FIX: Render summary as HTML inside the dark shell.
-        # st.markdown() renders in Streamlit's own light-themed container
-        # which sits outside our HTML div, making text invisible on dark bg.
-        # We convert the markdown summary to HTML and inject it directly.
-        import re as _re
-
-        def _md_to_html(md: str) -> str:
-            """Minimal Markdown → HTML converter for report display."""
-            lines, out, in_list = md.split("\n"), [], False
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("## "):
-                    if in_list:
-                        out.append("</ul>"); in_list = False
-                    out.append(f'<h2>{html.escape(stripped[3:])}</h2>')
-                elif stripped.startswith("### "):
-                    if in_list:
-                        out.append("</ul>"); in_list = False
-                    out.append(f'<h3>{html.escape(stripped[4:])}</h3>')
-                elif stripped.startswith(("- ", "* ", "• ")):
-                    if not in_list:
-                        out.append("<ul>"); in_list = True
-                    item = stripped[2:].strip()
-                    # bold
-                    item = _re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html.escape(item))
-                    out.append(f"<li>{item}</li>")
-                elif stripped == "":
-                    if in_list:
-                        out.append("</ul>"); in_list = False
-                    out.append("<br>")
-                else:
-                    if in_list:
-                        out.append("</ul>"); in_list = False
-                    para = _re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html.escape(stripped))
-                    out.append(f"<p>{para}</p>")
-            if in_list:
-                out.append("</ul>")
-            return "\n".join(out)
-
-        summary_html = _md_to_html(st.session_state.current_summary)
+        # BUG-FIX: Streamlit sanitizes each st.markdown call independently,
+        # so splitting an open <div> across multiple calls strips the unclosed
+        # tags and breaks the DOM on rerun → black screen.
+        # Fix: convert summary markdown → HTML and render the entire shell
+        # in a single unsafe_allow_html call so the DOM is always complete.
+        import markdown as _md
+        summary_html = _md.markdown(
+            st.session_state.current_summary,
+            extensions=["nl2br", "sane_lists"],
+        )
+        no_docs = '<span style="font-family:var(--font-m);font-size:.58rem;color:var(--ink-faint)">No documents on record for this meeting</span>'
 
         st.markdown(f"""
         <div class="report-shell">
@@ -851,11 +576,9 @@ with col_left:
             <span class="rt-date">{safe_date}</span>
             <span class="rt-engine">via {safe_engine}</span>
           </div>
-          <div class="report-body">
-            <div class="report-content">{summary_html}</div>
-          </div>
+          <div class="report-body">{summary_html}</div>
           <div class="report-foot">
-            {links or '<span style="font-family:var(--font-m);font-size:.58rem;color:#4a5a72">No documents on record for this meeting</span>'}
+            {links or no_docs}
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -866,6 +589,28 @@ with col_left:
             st.rerun()
 
     else:
+        c1, c2 = st.columns([3, 1])
+        analyze = c1.button("▶  Analyze Latest Meeting", use_container_width=True)
+        refresh = c2.button("⟳  Refresh", use_container_width=True)   # BUG-03 FIX: now handled
+
+        if refresh:
+            st.session_state.pop("range_meetings", None)
+            _load_from_supabase.clear()
+            st.rerun()
+
+        if analyze:
+            with st.status("Fetching meeting calendar...", expanded=True) as s:
+                meeting = get_latest_meeting()
+                if not meeting:
+                    s.update(label="❌ No recent meetings found", state="error")
+                    st.error(
+                        "No City Council meetings found in the last 90 days.\n\n"
+                        "Note: Only meetings with published agendas appear in the RSS feed."
+                    )
+                    st.stop()
+                st.write(f"✅ **Found:** {html.escape(meeting['name'])} — {html.escape(meeting['date'])}")
+            run_analysis(meeting, backend_choice)
+
         st.markdown("""
         <div class="info-box">
           <div class="info-box-title">How It Works</div>
@@ -884,9 +629,19 @@ with col_left:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with col_right:
 
-    st.markdown('<div class="sec-eyebrow">Recently Viewed</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-eyebrow">Archived Reports</div>', unsafe_allow_html=True)
 
     if archived_all:
+        latest = archived_all[0].get("meeting_date", "—")
+        n_eng  = len(set(r.get("backend_used", "") for r in archived_all))
+        st.markdown(f"""
+        <div class="stats-bar">
+          <div class="sc"><div class="sc-n">{len(archived_all)}</div><div class="sc-l">Reports</div></div>
+          <div class="sc"><div class="sc-n">{n_eng}</div><div class="sc-l">Engines</div></div>
+          <div class="sc"><div class="sc-n" style="font-size:.85rem;padding-top:6px">{html.escape(latest)}</div><div class="sc-l">Latest</div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
         for report in archived_all:
             eng_label = BACKENDS.get(report.get("backend_used", ""), {}).get(
                 "label", report.get("backend_used", "—")
@@ -925,7 +680,7 @@ with col_right:
         st.markdown("""
         <div class="empty-state">
           <div class="empty-state-icon">🗂</div>
-          <div class="empty-state-text">No reports viewed yet.<br>Analyze a meeting below to begin.</div>
+          <div class="empty-state-text">No archived reports yet.<br>Analyze a meeting below to begin.</div>
         </div>
         """, unsafe_allow_html=True)
 

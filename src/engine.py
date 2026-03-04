@@ -2,10 +2,16 @@
 engine.py — LLM Summarization Engine
 San Ramon Council Intelligence Platform
 
-Supabase persistence uses supabase-py create_client() directly.
-No st-supabase-connection wrapper. No st.connection(). No secrets.toml required.
-Credentials read from env vars (SUPABASE_URL, SUPABASE_KEY) with Streamlit
-secrets as fallback. Works in any Python context.
+Rate-limit hedging: each backend has a prioritised model cascade.
+When the primary model hits a rate/quota/404 error, the engine
+silently retries with the next model in that backend's list.
+The user's backend selection (Gemini, Groq, etc.) never changes.
+
+Model cascades:
+  gemini     → gemini-3-flash-preview → gemini-2.5-flash → gemini-2.0-flash
+  groq_llama → llama-3.3-70b-versatile → llama-3.1-70b-versatile → llama-3.1-8b-instant
+  trinity    → arcee-ai/trinity-large-preview:free → mistralai/mistral-7b-instruct:free
+  deepseek_r1→ deepseek/deepseek-r1-0528:free → deepseek/deepseek-chat:free
 """
 
 import os
@@ -13,94 +19,44 @@ import logging
 
 import streamlit as st
 from dotenv import load_dotenv
+from st_supabase_connection import SupabaseConnection
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 SUPPORTED_BACKENDS = ("groq_llama", "gemini", "trinity", "deepseek_r1")
 
+# Per-backend model cascades — primary first, fallbacks in order.
+# Only models within the same provider/key are listed so no new secrets
+# are required. Override the primary via env vars as before.
+MODEL_CASCADES = {
+    "gemini": [
+        "gemini-3-flash-preview",    # primary — highest RPD on free tier
+        "gemini-2.5-flash",          # fallback 1
+        "gemini-2.0-flash",          # fallback 2
+    ],
+    "groq_llama": [
+        "llama-3.3-70b-versatile",   # primary
+        "llama-3.1-70b-versatile",   # fallback 1
+        "llama-3.1-8b-instant",      # fallback 2 — smallest, highest rate limit
+    ],
+    "trinity": [
+        "arcee-ai/trinity-large-preview:free",   # primary
+        "mistralai/mistral-7b-instruct:free",    # fallback
+    ],
+    "deepseek_r1": [
+        "deepseek/deepseek-r1-0528:free",        # primary
+        "deepseek/deepseek-chat:free",           # fallback
+    ],
+}
 
-# ── Supabase ──────────────────────────────────────────────────────────────────
+# Errors that should trigger a model-level fallback
+_FALLBACK_TRIGGERS = (
+    "rate_limit", "429", "quota", "insufficient_quota", "billing",
+    "decommissioned", "model_decommissioned", "not_found", "404",
+    "overloaded", "503", "502",
+)
 
-def _get_supabase_client():
-    """
-    Returns a configured supabase-py Client, or None if unconfigured.
-    Lazy-imports supabase so missing package doesn't crash the module.
-    Reads SUPABASE_URL + SUPABASE_KEY from env vars, then st.secrets fallback.
-    """
-    try:
-        from supabase import create_client
-    except ImportError:
-        logger.warning("Supabase: package not installed — pip install supabase")
-        return None
-
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-
-    if not url or not key:
-        try:
-            url = url or st.secrets.get("SUPABASE_URL")
-            key = key or st.secrets.get("SUPABASE_KEY")
-        except Exception:
-            pass
-
-    if not url or not key:
-        logger.warning("Supabase: SUPABASE_URL / SUPABASE_KEY not set — persistence disabled")
-        return None
-
-    try:
-        return create_client(url, key)
-    except Exception as e:
-        logger.error(f"Supabase: create_client failed — {e}")
-        return None
-
-
-def save_to_supabase(meeting: dict, summary: str, backend: str) -> tuple[bool, str]:
-    """
-    Inserts one council report row. Returns (ok, message) so callers can
-    surface the exact result in the UI — no more silent data loss.
-    """
-    client = _get_supabase_client()
-    if client is None:
-        return False, "Supabase not configured (set SUPABASE_URL + SUPABASE_KEY)"
-
-    try:
-        client.table("council_reports").insert({
-            "meeting_date": meeting["date"],
-            "title":        meeting.get("name", "City Council Meeting"),
-            "summary":      summary,
-            "backend_used": backend,
-            "agenda_url":   meeting.get("agenda_url"),
-            "minutes_url":  meeting.get("minutes_url"),
-            "webcast_url":  meeting.get("webcast_url"),
-        }).execute()
-        logger.info(f"Supabase: saved {meeting['date']}")
-        return True, "ok"
-    except Exception as e:
-        logger.error(f"Supabase: save failed — {e}", exc_info=True)
-        return False, str(e)
-
-
-def load_from_supabase() -> list[dict]:
-    """
-    Fetches all council_reports rows, newest first.
-    Returns [] if Supabase is not configured or the query fails.
-    """
-    client = _get_supabase_client()
-    if client is None:
-        return []
-
-    try:
-        result = client.table("council_reports").select("*").order("created_at", desc=True).execute()
-        rows = result.data or []
-        logger.info(f"Supabase: loaded {len(rows)} reports")
-        return rows
-    except Exception as e:
-        logger.error(f"Supabase: load failed — {e}", exc_info=True)
-        return []
-
-
-# ── LLM helpers ───────────────────────────────────────────────────────────────
 
 def _get_secret(key: str) -> str | None:
     value = os.getenv(key)
@@ -112,22 +68,26 @@ def _get_secret(key: str) -> str | None:
     return value
 
 
-def _call_llm(client_fn, label: str) -> str:
+def _is_fallback_error(msg: str) -> bool:
+    msg = msg.lower()
+    return any(trigger in msg for trigger in _FALLBACK_TRIGGERS)
+
+
+def _call_llm(client_fn, label: str) -> tuple[str | None, bool]:
+    """
+    Returns (result, should_fallback).
+    should_fallback=True → rate/quota/model error, try next model in cascade.
+    should_fallback=False + result=None → hard error, stop.
+    """
     try:
-        return client_fn()
+        return client_fn(), False
     except Exception as e:
-        msg = str(e).lower()
-        if "rate_limit" in msg or "429" in msg:
-            logger.warning(f"{label}: rate limit hit")
-            return f"**Rate Limit:** {label} is busy. Wait 60 s and retry."
-        if "insufficient_quota" in msg or "billing" in msg:
-            return f"**Quota Error:** {label} has insufficient credits."
-        if "decommissioned" in msg or "model_decommissioned" in msg:
-            return f"**Model Error:** {label} model is decommissioned."
-        if "invalid_api_key" in msg or "authentication" in msg:
-            return f"**Auth Error:** Invalid {label} API key."
+        msg = str(e)
+        if _is_fallback_error(msg):
+            logger.warning(f"{label}: cascade trigger — {msg[:120]}")
+            return None, True
         logger.error(f"{label} error: {e}", exc_info=True)
-        return f"**{label} Error:** {e}"
+        return f"**{label} Error:** {e}", False
 
 
 def build_prompt(meeting: dict, text_snippet: str) -> str:
@@ -149,14 +109,12 @@ def build_prompt(meeting: dict, text_snippet: str) -> str:
 
 def prepare_transcript(transcript: list[dict], max_chars: int) -> str:
     full = " ".join(t["text"] for t in transcript)
-    logger.info(f"Engine: transcript = {len(full):,} chars")
+    logger.info(f"Engine: Transcript = {len(full):,} chars")
     if len(full) > max_chars:
-        logger.warning(f"Engine: trimming to {max_chars:,} chars")
+        logger.warning(f"Engine: Trimming to {max_chars:,} chars")
         return full[:max_chars]
     return full
 
-
-# ── Engine class ──────────────────────────────────────────────────────────────
 
 class CouncilEngine:
     CONTEXT_LIMITS = {
@@ -170,7 +128,27 @@ class CouncilEngine:
         self.backend = (backend or os.getenv("SUMMARIZER_BACKEND", "gemini")).lower()
         if self.backend not in SUPPORTED_BACKENDS:
             raise ValueError(f"Invalid backend '{self.backend}'. Choose from: {SUPPORTED_BACKENDS}")
-        logger.info(f"Engine: init '{self.backend}'")
+
+        # Allow env override of the primary model (preserves existing behaviour)
+        _env_overrides = {
+            "gemini":      os.getenv("GEMINI_MODEL"),
+            "groq_llama":  os.getenv("GROQ_MODEL"),
+        }
+        if _env_overrides.get(self.backend):
+            override = _env_overrides[self.backend]
+            cascade  = MODEL_CASCADES[self.backend]
+            # Put the override first; keep the rest as fallbacks
+            self._cascade = [override] + [m for m in cascade if m != override]
+            logger.info(f"Engine: Env override '{override}' placed at head of cascade")
+        else:
+            self._cascade = list(MODEL_CASCADES[self.backend])
+
+        logger.info(f"Engine: Init backend='{self.backend}' cascade={self._cascade}")
+        self._init_backend()
+
+    # ── Backend initialisation ────────────────────────────────────────────────
+
+    def _init_backend(self):
         {
             "groq_llama":  self._init_groq,
             "gemini":      self._init_gemini,
@@ -182,14 +160,40 @@ class CouncilEngine:
         from groq import Groq
         key = _get_secret("GROQ_API_KEY")
         if not key:
-            raise ValueError("GROQ_API_KEY not set")
-        self._groq       = Groq(api_key=key)
-        self._groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            raise ValueError("GROQ_API_KEY not found")
+        self._groq = Groq(api_key=key)
+        logger.info("Engine: Groq ready")
 
-    def _summarize_groq(self, prompt: str) -> str:
+    def _init_gemini(self):
+        from google import genai
+        key = _get_secret("GEMINI_API_KEY")
+        if not key:
+            raise ValueError("GEMINI_API_KEY not found")
+        self._gemini_client = genai.Client(
+            api_key=key,
+            http_options={"api_version": "v1beta"}
+        )
+        logger.info("Engine: Gemini ready")
+
+    def _init_openrouter(self):
+        from openai import OpenAI
+        key = _get_secret("OPENROUTER_API_KEY")
+        if not key:
+            raise ValueError("OPENROUTER_API_KEY not found")
+        self._or_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=key,
+            default_headers={"HTTP-Referer": "http://localhost:8501"},
+        )
+        logger.info("Engine: OpenRouter ready")
+
+    # ── Per-model call helpers ────────────────────────────────────────────────
+
+    def _call_groq(self, model: str, prompt: str) -> tuple[str | None, bool]:
+        logger.info(f"Engine: Groq → {model}")
         return _call_llm(
             lambda: self._groq.chat.completions.create(
-                model=self._groq_model,
+                model=model,
                 messages=[
                     {"role": "system", "content": "You are a senior political analyst. Report facts only. Use clean Markdown with ## headers and bullet points."},
                     {"role": "user",   "content": prompt},
@@ -197,71 +201,104 @@ class CouncilEngine:
                 temperature=0.1,
                 max_tokens=2000,
             ).choices[0].message.content,
-            "Groq"
+            f"Groq/{model}"
         )
 
-    def _init_gemini(self):
-        from google import genai
-        from google.genai import types as genai_types
-        key = _get_secret("GEMINI_API_KEY")
-        if not key:
-            raise ValueError("GEMINI_API_KEY not set")
-        self._gemini_client = genai.Client(
-            api_key=key,
-            http_options={"api_version": "v1beta"},
-        )
-        self._gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
-        self._genai_types  = genai_types
-
-    def _summarize_gemini(self, prompt: str) -> str:
+    def _call_gemini(self, model: str, prompt: str) -> tuple[str | None, bool]:
+        logger.info(f"Engine: Gemini → {model}")
         system = (
             "You are a concise civic reporter. Start immediately with ## Executive Summary. "
             "Use clean Markdown with ## section headers and bullet points. No preamble."
         )
         return _call_llm(
             lambda: self._gemini_client.models.generate_content(
-                model=self._gemini_model,
+                model=model,
                 contents=f"{system}\n\n{prompt}",
             ).text,
-            "Gemini"
+            f"Gemini/{model}"
         )
 
-    def _init_openrouter(self):
-        from openai import OpenAI
-        key = _get_secret("OPENROUTER_API_KEY")
-        if not key:
-            raise ValueError("OPENROUTER_API_KEY not set")
-        self._or_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=key,
-            default_headers={"HTTP-Referer": "http://localhost:8501"},
-        )
-        self._or_model = {
-            "trinity":     "arcee-ai/trinity-large-preview:free",
-            "deepseek_r1": "deepseek/deepseek-r1-0528:free",
-        }[self.backend]
-
-    def _summarize_openrouter(self, prompt: str) -> str:
+    def _call_openrouter(self, model: str, prompt: str) -> tuple[str | None, bool]:
+        logger.info(f"Engine: OpenRouter → {model}")
         return _call_llm(
             lambda: self._or_client.chat.completions.create(
-                model=self._or_model,
+                model=model,
                 messages=[
                     {"role": "system", "content": "You are an expert City Clerk. Produce executive-level civic reports in clean Markdown. Start with ## Executive Summary. No preamble."},
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0.1,
             ).choices[0].message.content,
-            "OpenRouter"
+            f"OpenRouter/{model}"
         )
 
+    def _call_model(self, model: str, prompt: str) -> tuple[str | None, bool]:
+        """Dispatch to the right API for a given model string."""
+        if self.backend == "groq_llama":
+            return self._call_groq(model, prompt)
+        elif self.backend == "gemini":
+            return self._call_gemini(model, prompt)
+        else:
+            return self._call_openrouter(model, prompt)
+
+    # ── Main dispatcher with model cascade ───────────────────────────────────
+
     def generate_summary(self, meeting: dict, transcript: list[dict]) -> str:
+        """
+        Runs the model cascade for the user's selected backend.
+        On a rate-limit / quota / 404 error, silently steps down to the
+        next model in the cascade. The backend (provider) never changes.
+        """
         limit   = self.CONTEXT_LIMITS[self.backend]
         snippet = prepare_transcript(transcript, limit)
         prompt  = build_prompt(meeting, snippet)
-        logger.info(f"Engine: prompt={len(prompt):,} chars | backend={self.backend}")
-        return {
-            "groq_llama":  self._summarize_groq,
-            "gemini":      self._summarize_gemini,
-            "trinity":     self._summarize_openrouter,
-            "deepseek_r1": self._summarize_openrouter,
-        }[self.backend](prompt)
+
+        logger.info(f"Engine: Starting cascade for backend='{self.backend}' | {len(self._cascade)} model(s)")
+
+        for i, model in enumerate(self._cascade):
+            is_primary = (i == 0)
+            result, should_fallback = self._call_model(model, prompt)
+
+            if not should_fallback:
+                # Success or hard error — either way, return
+                if result and not is_primary:
+                    logger.info(f"Engine: Cascade succeeded on model '{model}' (step {i+1})")
+                    result = f"> *Generated with **{model}** (rate-limit fallback from primary)*\n\n{result}"
+                return result
+
+            # Fallback triggered
+            if i + 1 < len(self._cascade):
+                logger.warning(
+                    f"Engine: '{model}' rate/quota limited → "
+                    f"trying '{self._cascade[i+1]}'"
+                )
+            else:
+                logger.error(f"Engine: All models in cascade exhausted for backend='{self.backend}'")
+
+        return (
+            f"**{self.backend.title()} Temporarily Unavailable**\n\n"
+            f"All models in the {self.backend} cascade are currently rate-limited:\n"
+            + "\n".join(f"- `{m}`" for m in self._cascade) +
+            "\n\n**What to do:**\n"
+            "- Groq resets hourly · Gemini resets daily at midnight PT\n"
+            "- Switch to a different backend in the sidebar while waiting"
+        )
+
+    @staticmethod
+    def save_to_supabase(meeting: dict, summary: str, backend: str) -> bool:
+        try:
+            conn = st.connection("supabase", type=SupabaseConnection)
+            conn.table("council_reports").insert({
+                "meeting_date": meeting["date"],
+                "title":        meeting.get("name", "City Council Meeting"),
+                "summary":      summary,
+                "backend_used": backend,
+                "agenda_url":   meeting.get("agenda_url"),
+                "minutes_url":  meeting.get("minutes_url"),
+                "webcast_url":  meeting.get("webcast_url"),
+            }).execute()
+            logger.info(f"Engine: Saved {meeting['date']} to Supabase")
+            return True
+        except Exception as e:
+            logger.error(f"Engine: Supabase save failed — {e}", exc_info=True)
+            return False

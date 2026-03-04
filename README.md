@@ -62,7 +62,7 @@ IQM2 RSS Feed
 
 | Backend | Model | Context | Free Tier |
 |---------|-------|---------|-----------|
-| Gemini Flash | gemini-2.5-flash-preview-04-17 | 120k chars | ✅ Recommended |
+| Gemini Flash | gemini-2.5-flash-preview-05-20 | 120k chars | ✅ Recommended |
 | Llama 3.3 70B | llama-3.3-70b-versatile (Groq) | 18k chars | ✅ Fast |
 | Trinity Large | arcee-ai/trinity-large-preview (OpenRouter) | 40k chars | ✅ |
 | DeepSeek R1 | deepseek/deepseek-r1-0528 (OpenRouter) | 64k chars | ✅ |

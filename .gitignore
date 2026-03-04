@@ -1,12 +1,17 @@
-# --- Project Secrets ---
+# Secrets
 .env
 .streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Logs
 logs/
 *.log
 
-# --- Python Defaults ---
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.venv/
+# OS
+.DS_Store
